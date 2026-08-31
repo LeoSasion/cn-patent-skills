@@ -1,0 +1,7 @@
+interface:
+  display_name: "中国专利通俗解读"
+  short_description: "把已有中国专利的权利要求、说明书、附图和证据位置讲清楚"
+  default_prompt: "使用 $explain-cn-patent 核对这件专利的文本范围，梳理权利要求树，并用通俗语言解释技术方案和证据位置。"
+
+policy:
+  allow_implicit_invocation: true

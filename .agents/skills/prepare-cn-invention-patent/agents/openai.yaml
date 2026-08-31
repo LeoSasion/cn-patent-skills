@@ -1,0 +1,7 @@
+interface:
+  display_name: "中国发明专利申请准备"
+  short_description: "从技术事实和查新到权利要求、交底书与申请前校对的一体化流程"
+  default_prompt: "使用 $prepare-cn-invention-patent 基于当前技术证据准备中国发明专利申请，并在冻结权利要求前比较授权稳健优先与保护范围优先策略。"
+
+policy:
+  allow_implicit_invocation: true
