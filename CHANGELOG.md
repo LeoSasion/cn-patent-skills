@@ -1,5 +1,13 @@
 # 变更记录
 
+## 未发布
+
+- 整合 `HuangXinzhe/cn-patent-drafting` 和 `yjmm10/patent-skills`，在 Skill 目录保留上游 MIT 声明。
+- 默认采用六章技术交底书、时间戳命名和 Markdown + A4 Word 双格式。
+- 完整申请改为分件草稿，增加附图、查新笔记、请求书信息确认表和交付清单的成套检查。
+- 增加论文、实验及创意输入，采纳官方规范核验、可核验查新引用、脱敏与有记录的迭代流程。
+- 八段式 DOCX 模板、合订 PDF 版式及既有审计配置留作历史版本兼容。
+
 ## 1.0.0 — 2026-09-01
 
 - 将测试期的 `cn-invention-patent-delivery` 正式更名为 `prepare-cn-invention-patent`。

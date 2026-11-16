@@ -8,7 +8,7 @@
 
 显示名称：**中国发明专利申请准备**。
 
-从当前代码、测试和技术材料出发，建立事实账本，检索现有技术，比较申请策略，设计权利要求，生成技术交底书与申请前校对材料，并审计版本、来源、隐私和 Git 隔离。
+从创意、论文、实验、代码或已有交底书出发，筛选发明点、核验技术证据、检索现有技术、撰写和修订交底书及申请草稿。全套草稿按权利要求、说明书、摘要、适用的附图、查新笔记、请求书信息确认表和提交文件清单分件交付。
 
 它不会替代专利代理师或律师，不会正式提交申请、承诺授权，或把未经官方工具和系统校验的文件称为可提交 XML。
 
@@ -36,26 +36,17 @@ $explain-cn-patent
 
 旧测试名称 `cn-invention-patent-delivery` 已在 1.0.0 中由 `prepare-cn-invention-patent` 取代。正式发布不保留旧名称兼容壳，以免旧版继续触发过宽职责和默认策略。
 
-## 内置技术交底书
+## 默认交底书与分件申请草稿
 
-主 Skill 自带一份从零生成的 A4 空白 DOCX：
-
-```text
-.agents/skills/prepare-cn-invention-patent/assets/技术交底书_空白模板.docx
-```
-
-模板使用 14 个稳定内容控件标签，不依赖段落或表格索引。构建和填写命令：
+默认采用 [六章交底书模板](.agents/skills/prepare-cn-invention-patent/assets/default-disclosure-template.md) 和 Markdown + A4 DOCX 双格式。交底书可按用户提供的模板制作。完整申请的文件名、渲染和审计方法见 [交付与版本](.agents/skills/prepare-cn-invention-patent/references/delivery-contract.md)。
 
 ```powershell
-python .agents/skills/prepare-cn-invention-patent/scripts/build_disclosure_template.py
-python .agents/skills/prepare-cn-invention-patent/scripts/check_template_hash.py
-python .agents/skills/prepare-cn-invention-patent/scripts/fill_disclosure_template.py `
-  --values values.json `
-  --output 技术交底书.docx `
-  --require-all
+python -m pip install python-docx
+python .agents/skills/prepare-cn-invention-patent/scripts/render_patent_docx.py `
+  --input "<交底书源稿.md>" --output "<交底书交付稿.docx>"
 ```
 
-构建脚本需要 `python-docx` 和 `lxml`。交付审计在遇到 PDF 时需要 `pypdf`。Microsoft Word 仅作为 Windows 上的可选只读 PDF 导出后端。
+旧八段式模板及填充脚本供历史稿维护。交付审计在遇到 PDF 时需要 `pypdf`，Microsoft Word 可作为 Windows 上的只读 PDF 导出后端。
 
 ## 验证
 
@@ -65,7 +56,7 @@ python -m unittest discover `
   -v
 ```
 
-测试覆盖确定性模板构建、内容控件填充、隐私元数据、空包失败、显式部分交付、无附图说明边界和旧 XML 类型拒绝。正式完整包的审计默认失败关闭；只有分析包或章节包可以显式使用 `--allow-partial`。
+测试覆盖分件 Word 导出与审计、A4 页面、权项号、图片、文件哈希、隐私元数据和历史模板兼容。只有分析包或章节包可以显式使用 `--allow-partial`。
 
 ## 保密与法律边界
 
@@ -76,4 +67,4 @@ python -m unittest discover `
 
 ## 许可证
 
-代码、Skill 文本和项目生成的空白模板按 [Apache License 2.0](LICENSE) 发布。资产来源见 [ASSET_PROVENANCE.md](ASSET_PROVENANCE.md)。
+本项目原创内容按 [Apache License 2.0](LICENSE) 发布。采用的上游模板和脚本随 Skill 附有各自的 MIT 许可声明，详见 [资产来源与上游版本](ASSET_PROVENANCE.md)。

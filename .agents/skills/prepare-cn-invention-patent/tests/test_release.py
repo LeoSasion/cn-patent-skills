@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import shutil
@@ -9,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from docx import Document
 from lxml import etree
 
 
@@ -21,10 +23,115 @@ import audit_delivery_bundle as audit  # noqa: E402
 import check_template_hash as template_check  # noqa: E402
 from docx_package import load_parts, write_parts  # noqa: E402
 from fill_disclosure_template import REQUIRED_TAGS  # noqa: E402
+from make_output_paths import DRAWING_PACKAGE_DOCS, REQUIRED_PACKAGE_DOCS  # noqa: E402
 
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+class SeparateWordTests(unittest.TestCase):
+    def run_script(self, script: str, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCRIPTS / script), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+
+    def test_split_docx_package_and_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            root = workspace / "bundle"
+            internal = root / "99-内部校验"
+            internal.mkdir(parents=True)
+            diagram = root / "图1.png"
+            diagram.write_bytes(base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jJ1kAAAAASUVORK5CYII="
+            ))
+            for name in (*REQUIRED_PACKAGE_DOCS, *DRAWING_PACKAGE_DOCS):
+                markdown = root / f"{name}.md"
+                body = {
+                    "02_权利要求书": "1. 一种采样方法。\n\n2. 根据权利要求1所述的采样方法。\n",
+                    "03_说明书": "## 技术领域\n采样。\n## 背景技术\n时序。\n## 发明内容\n校验。\n## 附图说明\n见图1。\n## 具体实施方式\n先读取时序。\n",
+                    "05_说明书附图": "![图1 采样流程](图1.png)\n",
+                    "06_摘要附图": "![图1 采样流程](图1.png)\n",
+                }.get(name, "一种采样方法的模拟测试。\n")
+                markdown.write_text(f"# {name.split('_')[-1]}\n\n{body}", encoding="utf-8")
+                result = self.run_script(
+                    "render_patent_docx.py", "-i", str(markdown), "-o", str(markdown.with_suffix(".docx"))
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+
+            claims = Document(root / "02_权利要求书.docx")
+            section = claims.sections[0]
+            self.assertAlmostEqual(210, section.page_width.mm, places=1)
+            self.assertAlmostEqual(297, section.page_height.mm, places=1)
+            self.assertEqual("2. 根据权利要求1所述的采样方法。", claims.paragraphs[-1].text)
+            self.assertEqual(1, len(Document(root / "06_摘要附图.docx").inline_shapes))
+
+            evidence = workspace / "evidence.md"
+            evidence.write_text("模拟证据。\n", encoding="utf-8")
+            layout = SKILL_ROOT / "references" / "document-contracts.md"
+            builder = SCRIPTS / "render_patent_docx.py"
+            canonical = {
+                "abstract": "04_说明书摘要.md",
+                "claims": "02_权利要求书.md",
+                "description": "03_说明书.md",
+            }
+            source_files = [root / path for path in canonical.values()]
+            provenance = {
+                "artifact_type": "application_docx",
+                "workspace_root": str(workspace),
+                "invention_topic": "一种采样方法",
+                "canonical_application_sources": {
+                    **canonical, "drawings": [diagram.name], "abstract_figure": diagram.name
+                },
+                "implementation_evidence": [str(evidence)],
+                "layout_authority": str(layout),
+                "official_rule_authorities": ["https://www.cnipa.gov.cn/art/2023/12/21/art_98_189197.html"],
+                "build_pipeline": {"document_builders": [str(builder)]},
+                "source_hashes": {
+                    str(path): digest(path) for path in [*source_files, diagram, evidence, layout, builder]
+                },
+            }
+            (internal / "provenance.json").write_text(
+                json.dumps(provenance, ensure_ascii=False), encoding="utf-8"
+            )
+            manifest = root / "02-文件校验.sha256"
+            entries = {path.name: f"{digest(path)}  {path.name}" for path in root.iterdir() if path.is_file()}
+            manifest.write_text("\n".join(entries.values()) + "\n", encoding="utf-8")
+            command = ("audit_delivery_bundle.py", "--root", str(root))
+            result = self.run_script(*command)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+            lost = "06_摘要附图.docx"
+            entries.pop(lost)
+            manifest.write_text("\n".join(entries.values()) + "\n", encoding="utf-8")
+            result = self.run_script(*command)
+            self.assertEqual(1, result.returncode, result.stdout)
+            self.assertIn("SHA-256 清单未覆盖交付文件", result.stdout)
+
+            (root / lost).unlink()
+            result = self.run_script(*command)
+            self.assertEqual(1, result.returncode, result.stdout)
+            self.assertIn(f"分件交付缺少有效文件：{lost}", result.stdout)
+
+    def test_docx_rejects_unrendered_diagram_and_out_of_scope_image(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            markdown = root / "输入.md"
+            output = root / "输出.docx"
+            for source, error in [
+                ("```mermaid\nflowchart TB\n```\n", "Mermaid 缺少"),
+                ("![图](../outside.png)\n", "图片路径超出"),
+            ]:
+                markdown.write_text(source, encoding="utf-8")
+                result = self.run_script("render_patent_docx.py", "-i", str(markdown), "-o", str(output))
+                self.assertEqual(1, result.returncode, result.stderr)
+                self.assertIn(error, result.stderr)
+                self.assertFalse(output.exists())
 
 
 class TemplateTests(unittest.TestCase):

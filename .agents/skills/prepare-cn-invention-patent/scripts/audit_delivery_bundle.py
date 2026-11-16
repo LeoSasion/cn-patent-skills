@@ -12,6 +12,8 @@ from typing import Any
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
+from make_output_paths import DRAWING_PACKAGE_DOCS, PACKAGE_DOCS, REQUIRED_PACKAGE_DOCS
+
 
 NS = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -98,6 +100,7 @@ def audit_manifest(
     errors: list[str],
     warnings: list[str],
     required: bool = True,
+    required_paths: set[Path] | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {"path": str(manifest), "checked": 0, "mismatches": []}
     if not manifest.is_file():
@@ -107,6 +110,7 @@ def audit_manifest(
 
     result["present"] = True
     seen: set[str] = set()
+    verified: set[Path] = set()
     pattern = re.compile(r"^([0-9A-Fa-f]{64})\s+\*?(.+?)\s*$")
     for number, line in enumerate(manifest.read_text(encoding="utf-8-sig").splitlines(), start=1):
         if not line.strip() or line.lstrip().startswith("#"):
@@ -136,8 +140,12 @@ def audit_manifest(
         if actual.lower() != expected.lower():
             result["mismatches"].append(normalized)
             errors.append(f"SHA-256 不一致：{normalized}")
+        else:
+            verified.add(candidate)
     if result["checked"] == 0:
         errors.append("SHA-256 清单没有可核验条目")
+    for missing in sorted((required_paths or set()) - verified):
+        errors.append(f"SHA-256 清单未覆盖交付文件：{missing}")
     return result
 
 
@@ -173,6 +181,7 @@ def audit_provenance(
 
     artifact_type = str(data.get("artifact_type", "")).strip()
     allowed_artifact_types = {
+        "application_docx",
         "review_pdf",
         "application_sources",
         "xml_preparation",
@@ -181,24 +190,24 @@ def audit_provenance(
     }
     if artifact_type not in allowed_artifact_types:
         errors.append(
-            "provenance.artifact_type 必须是 review_pdf、application_sources、"
-            "xml_preparation、analysis_bundle 或 section_bundle"
+            "provenance.artifact_type 无效：" + ", ".join(sorted(allowed_artifact_types))
         )
     topic = str(data.get("invention_topic", "")).strip()
     if not topic:
         errors.append("provenance.invention_topic 不能为空")
     review_label = str(data.get("review_label", "")).strip()
-    if artifact_type == "review_pdf" and review_label != REVIEW_LABEL:
-        errors.append(f"review_pdf 必须使用精确标记：{REVIEW_LABEL}")
-
     output_pdf = manifest_path(data.get("output_pdf"), base)
-    if artifact_type == "review_pdf":
+    if artifact_type == "review_pdf" or (artifact_type == "application_docx" and output_pdf is not None):
+        if review_label != REVIEW_LABEL:
+            errors.append(f"校对 PDF 必须使用精确标记：{REVIEW_LABEL}")
         if output_pdf is None or not output_pdf.is_file():
             errors.append("review_pdf 必须声明存在的 output_pdf")
         elif not inside(output_pdf, delivery_root):
             errors.append("output_pdf 必须位于交付目录内")
 
-    requires_canonical = artifact_type in {"review_pdf", "application_sources", "xml_preparation"}
+    requires_canonical = artifact_type in {
+        "application_docx", "review_pdf", "application_sources", "xml_preparation"
+    }
     canonical = data.get("canonical_application_sources")
     if not isinstance(canonical, dict):
         if requires_canonical:
@@ -215,6 +224,15 @@ def audit_provenance(
         "claims": claims,
         "description": description,
     }
+    if artifact_type == "application_docx":
+        expected_names = {
+            "abstract": "04_说明书摘要.md",
+            "claims": "02_权利要求书.md",
+            "description": "03_说明书.md",
+        }
+        for role, name in expected_names.items():
+            if canonical_text[role] != (delivery_root / name).resolve():
+                errors.append(f"分件规范源 {role} 必须指向 {name}")
     for role, source in canonical_text.items():
         if source is None or not source.is_file():
             if not requires_canonical:
@@ -412,6 +430,8 @@ def audit_provenance(
             "claims": claim_blocks,
             "description_text": description_text,
             "drawing_count": len(drawings),
+            "drawings": drawings,
+            "abstract_figure": abstract_figure,
             "applicant": applicant,
             "inventors": inventors,
         }
@@ -419,7 +439,9 @@ def audit_provenance(
     return record, expectations
 
 
-def audit_docx(path: Path, errors: list[str], warnings: list[str]) -> dict[str, Any]:
+def audit_docx(
+    path: Path, errors: list[str], warnings: list[str], *, expected_drawings: list[Path] | None = None
+) -> dict[str, Any]:
     record: dict[str, Any] = {"path": str(path), "sha256": sha256(path)}
     try:
         with zipfile.ZipFile(path) as archive:
@@ -442,6 +464,11 @@ def audit_docx(path: Path, errors: list[str], warnings: list[str]) -> dict[str, 
                 value = (item.attrib.get("descr") or item.attrib.get("title") or "").strip()
                 alt_texts.append(value)
             media = [name for name in names if name.startswith("word/media/") and not name.endswith("/")]
+            if expected_drawings:
+                embedded = {hashlib.sha256(archive.read(name)).hexdigest() for name in media}
+                expected = {sha256(drawing) for drawing in expected_drawings if drawing.is_file()}
+                if not (inline or anchors) or embedded != expected:
+                    errors.append(f"附图 Word 内嵌媒体与规范附图不一致：{path.name}")
             comments = any(name.startswith("word/comments") for name in names)
             custom_properties = "docProps/custom.xml" in names
             forbidden_parts = sorted(
@@ -581,6 +608,11 @@ def audit_pdf(
             "subject": str(metadata.get("/Subject", "") or ""),
             "author": str(metadata.get("/Author", "") or ""),
         }
+
+        if expectations and expectations.get("artifact_type") == "application_docx":
+            cover = compact_text(page_texts[0]) if page_texts else ""
+            if cover.count(compact_text(REVIEW_LABEL)) != 1:
+                errors.append("校对 PDF 首页必须且只能出现一次精确状态标记")
 
         if expectations and expectations.get("artifact_type") == "review_pdf":
             for index, (width, height) in enumerate(page_sizes, start=1):
@@ -751,13 +783,6 @@ def main() -> int:
         "profile": args.profile,
         "allow_partial": args.allow_partial,
         "substantive_files": len(substantive_files),
-        "manifest": audit_manifest(
-            root,
-            manifest,
-            errors,
-            warnings,
-            required=not args.allow_partial,
-        ),
         "docx": [],
         "drawio": [],
         "pdf": [],
@@ -777,7 +802,7 @@ def main() -> int:
         )
         result["provenance"] = provenance_record
         expected_types = {
-            "full": {"review_pdf", "application_sources", "xml_preparation"},
+            "full": {"application_docx", "review_pdf", "application_sources", "xml_preparation"},
             "analysis": {"analysis_bundle"},
             "section": {"section_bundle"},
         }[args.profile]
@@ -791,12 +816,39 @@ def main() -> int:
     elif not args.allow_partial:
         warnings.append("analysis/section 配置未提供 provenance；来源深审未执行")
 
-    for required in root_files:
-        if not (root / required).is_file():
-            (warnings if args.allow_partial else errors).append(f"缺少标准根文件：{required}")
+    separate_docx = provenance_expectations.get("artifact_type") == "application_docx"
+    drawing_count = provenance_expectations.get("drawing_count", 0)
+    if separate_docx:
+        required_docs = set(REQUIRED_PACKAGE_DOCS)
+        if drawing_count:
+            required_docs.update(DRAWING_PACKAGE_DOCS)
+        for stem in PACKAGE_DOCS:
+            files = [root / f"{stem}.{extension}" for extension in ("md", "docx")]
+            if stem in required_docs or any(path.exists() for path in files):
+                for path in files:
+                    if not path.is_file() or not inside(path, root):
+                        errors.append(f"分件交付缺少有效文件：{path.name}")
+    else:
+        for required in root_files:
+            if not (root / required).is_file():
+                (warnings if args.allow_partial else errors).append(f"缺少标准根文件：{required}")
+    result["manifest"] = audit_manifest(
+        root,
+        manifest,
+        errors,
+        warnings,
+        required=not args.allow_partial,
+        required_paths={path.resolve() for path in substantive_files} if separate_docx else None,
+    )
 
     for path in sorted(root.rglob("*.docx")):
-        result["docx"].append(audit_docx(path, errors, warnings))
+        expected_drawings = None
+        if separate_docx and drawing_count and path.parent == root:
+            if path.stem == DRAWING_PACKAGE_DOCS[0]:
+                expected_drawings = provenance_expectations["drawings"]
+            elif path.stem == DRAWING_PACKAGE_DOCS[1] and provenance_expectations["abstract_figure"]:
+                expected_drawings = [provenance_expectations["abstract_figure"]]
+        result["docx"].append(audit_docx(path, errors, warnings, expected_drawings=expected_drawings))
     for path in sorted(root.rglob("*.drawio")):
         result["drawio"].append(audit_drawio(path, errors))
     for path in sorted(root.rglob("*.pdf")):
